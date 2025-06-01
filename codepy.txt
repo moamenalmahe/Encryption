@@ -1,0 +1,325 @@
+import sys
+import os
+import json
+from cryptography.fernet import Fernet
+import hashlib
+import zipfile
+from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QLineEdit, QLabel, QMessageBox
+from PyQt5.QtGui import QFont, QPalette, QColor, QIcon
+from PyQt5.QtWidgets import QInputDialog
+
+
+class Encryptor:
+    def key_create(self):
+        return Fernet.generate_key()
+
+    def key_write(self, key, key_name):
+        with open(key_name, 'wb') as mykey:
+            mykey.write(key)
+
+    def key_load(self, key_name):
+        with open(key_name, 'rb') as mykey:
+            return mykey.read()
+
+    def file_encrypt(self, key, original_file, encrypted_file):
+        f = Fernet(key)
+        with open(original_file, 'rb') as file:
+            original = file.read()
+        encrypted = f.encrypt(original)
+        with open(encrypted_file, 'wb') as file:
+            file.write(encrypted)
+
+    def file_decrypt(self, key, encrypted_file, decrypted_file):
+        f = Fernet(key)
+        with open(encrypted_file, 'rb') as file:
+            encrypted = file.read()
+        decrypted = f.decrypt(encrypted)
+        with open(decrypted_file, 'wb') as file:
+            file.write(decrypted)
+
+    def create_backup(self, key_file, backup_code):
+        hashed_code = hashlib.sha256(backup_code.encode()).hexdigest()
+        with open("backup_code.hash", "w") as f:
+            f.write(hashed_code)
+        with zipfile.ZipFile("Encryption-Code-Backup.zip", "w") as backup_zip:
+            backup_zip.write(key_file)
+            if os.path.exists("settings.json"):
+                backup_zip.write("settings.json")
+            backup_zip.write("backup_code.hash")
+        os.remove("backup_code.hash")
+        return "Encryption-Code-Backup.zip"
+
+    def verify_backup_code(self, backup_code, backup_file="Encryption-Code-Backup.zip"):
+        with zipfile.ZipFile(backup_file, "r") as backup_zip:
+            with backup_zip.open("backup_code.hash") as f:
+                stored_hashed_code = f.read().decode()
+        hashed_code = hashlib.sha256(backup_code.encode()).hexdigest()
+        return hashed_code == stored_hashed_code
+
+    def restore_backup(self, backup_file="Encryption-Code-Backup.zip"):
+        with zipfile.ZipFile(backup_file, "r") as backup_zip:
+            backup_zip.extractall()
+        return [name for name in zipfile.ZipFile(backup_file).namelist() if name.endswith(".key")][0]
+
+
+class App(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("File Encryptor & Decryptor")
+        self.setGeometry(100, 100, 800, 500)
+
+        # Initialize drag position
+        self._drag_position = None
+
+        # Create Encryptor instance
+        self.encryptor = Encryptor()
+        self.key = None
+        self.settings = self.load_settings()
+
+        # Debugging line
+        if "saved_key" in self.settings:
+            print("Loaded saved key:", self.settings["saved_key"])
+        else:
+            print("No saved key found.")
+
+        # Set up the overall layout
+        self.layout = QVBoxLayout(self)
+
+        # Set up the title label
+        self.title = QLabel("Encryption GUI", self)
+        self.title.setFont(QFont("Arial", 24, QFont.Bold))
+        self.title.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.title)
+
+        # Create buttons
+        self.create_buttons()
+
+        self.setStyleSheet(self.get_stylesheet())
+        self.setWindowFlag(Qt.FramelessWindowHint)
+
+    # Methods to make the window draggable
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_position = event.globalPos()  # Store the initial mouse position
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_position:
+            delta = event.globalPos() - self._drag_position
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self._drag_position = event.globalPos()
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_position = None
+        event.accept()
+
+    def create_buttons(self):
+        button_layout = QVBoxLayout()
+        button_layout.setSpacing(15)
+
+        self.generate_key_button = self.create_button("Generate a Key", self.generate_key)
+        self.load_key_button = self.create_button("Load a Key", self.load_key)
+        self.encrypt_file_button = self.create_button("Encrypt a File", self.encrypt_file)
+        self.decrypt_file_button = self.create_button("Decrypt a File", self.decrypt_file)
+        self.create_backup_button = self.create_button("Create a Backup", self.create_backup)
+        self.restore_backup_button = self.create_button("Restore from a Backup", self.restore_backup)
+        self.verify_backup_code_button = self.create_button("Verify Backup Code", self.verify_backup_code)
+        self.exit_button = self.create_button("Exit", self.close)
+
+        button_layout.addWidget(self.generate_key_button)
+        button_layout.addWidget(self.load_key_button)
+        button_layout.addWidget(self.encrypt_file_button)
+        button_layout.addWidget(self.decrypt_file_button)
+        button_layout.addWidget(self.create_backup_button)
+        button_layout.addWidget(self.restore_backup_button)
+        button_layout.addWidget(self.verify_backup_code_button)
+        button_layout.addWidget(self.exit_button)
+
+        self.layout.addLayout(button_layout)
+
+    def create_button(self, text, callback):
+        button = QPushButton(text, self)
+        button.setFont(QFont("Arial", 12))
+        button.setStyleSheet(self.button_style())
+        button.clicked.connect(callback)
+        return button
+
+    def button_style(self):
+        return """
+            QPushButton {
+                background-color: #444444;
+                color: white;
+                border-radius: 10px;
+                padding: 10px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #666666;
+            }
+            """
+
+    def load_settings(self):
+        # Ensure the program runs in the correct directory
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        settings_path = os.path.join(script_dir, "settings.json")
+
+        # Initialize settings as an empty dictionary in case file doesn't exist
+        if not hasattr(self, 'settings'):
+            self.settings = {}
+
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, 'r') as f:
+                    self.settings = json.load(f)
+                    print("Settings loaded:", self.settings)
+                    if "saved_key" in self.settings:
+                        self.key = self.encryptor.key_load(self.settings["saved_key"])
+                        print(f"Key loaded from {self.settings['saved_key']}")
+                    return self.settings
+            except json.JSONDecodeError:
+                return {}  # Return an empty dictionary if the file is invalid
+        else:
+            self.save_settings()  # Create the file if it doesn't exist
+            return self.settings  # Return the initialized empty settings
+
+    def save_settings(self):
+        # Ensure the key is saved correctly
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        settings_path = os.path.join(script_dir, "settings.json")
+
+        if hasattr(self, 'settings') and self.key:
+            self.settings["saved_key"] = os.path.basename(self.settings.get("saved_key", ""))
+            with open(settings_path, "w") as f:
+                json.dump(self.settings, f, indent=4)
+                print("Settings saved:", self.settings)
+
+    def generate_key(self):
+        key = self.encryptor.key_create()
+        key_file, _ = QFileDialog.getSaveFileName(self, "Save Key", "", "Key files (*.key)")
+        if key_file:
+            self.encryptor.key_write(key, key_file)
+            self.key = key
+            if self.ask_saved_key():
+                self.settings["saved_key"] = key_file
+                self.save_settings()
+                print("Saved key file:", key_file)
+
+    def load_key(self):
+        key_file, _ = QFileDialog.getOpenFileName(self, "Open Key", "", "Key files (*.key)")
+        if key_file:
+            try:
+                self.key = self.encryptor.key_load(key_file)
+                self.show_message("Key Loaded", f"Key loaded from {key_file}")
+                if self.ask_saved_key():
+                    self.settings["saved_key"] = key_file
+                    self.save_settings()
+                    print("Saved key file:", key_file)
+            except Exception as e:
+                self.show_message("Error", f"Failed to load key: {e}", "error")
+
+    def encrypt_file(self):
+        if not self.key:
+            self.show_message("Error", "No key loaded. Generate or load a key first.", "error")
+            return
+        # السماح بتحديد أكثر من ملف
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Files to Encrypt")
+        if files:
+            # تحديد مكان حفظ الملفات المشفرة
+            encrypted_dir = QFileDialog.getExistingDirectory(self, "Select Directory to Save Encrypted Files")
+            if encrypted_dir:
+                for original_file in files:
+                    # تحديد اسم الملف المشفر بناءً على اسم الملف الأصلي
+                    encrypted_file = os.path.join(encrypted_dir, os.path.basename(original_file) + ".gman")
+                    try:
+                        self.encryptor.file_encrypt(self.key, original_file, encrypted_file)
+                        self.show_message("Success", f"File encrypted as {encrypted_file}")
+                    except Exception as e:
+                        self.show_message("Error", f"Failed to encrypt file {original_file}: {e}", "error")
+
+    def decrypt_file(self):
+        if not self.key:
+            self.show_message("Error", "No key loaded. Generate or load a key first.", "error")
+            return
+        encrypted_file, _ = QFileDialog.getOpenFileName(self, "Select File to Decrypt")
+        if encrypted_file:
+            decrypted_file, _ = QFileDialog.getSaveFileName(self, "Save Decrypted File")
+            if decrypted_file:
+                try:
+                    self.encryptor.file_decrypt(self.key, encrypted_file, decrypted_file)
+                    self.show_message("Success", f"File decrypted as {decrypted_file}")
+                except Exception as e:
+                    self.show_message("Error", f"Failed to decrypt file: {e}", "error")
+
+    def create_backup(self):
+        if not self.key:
+            self.show_message("Error", "No key loaded. Generate or load a key first.", "error")
+            return
+        backup_code, ok = QInputDialog.getText(self, "Backup Code", "Enter a passphrase for the backup:")
+        if ok:
+            try:
+                key_file = self.settings.get("saved_key", "saved.key")
+                backup_file = self.encryptor.create_backup(key_file, backup_code)
+                self.show_message("Success", f"Backup created: {backup_file}")
+            except Exception as e:
+                self.show_message("Error", f"Failed to create backup: {e}", "error")
+
+    def verify_backup_code(self):
+        backup_file, _ = QFileDialog.getOpenFileName(self, "Open Backup File", "", "ZIP files (*.zip)")
+        if backup_file:
+            backup_code, ok = QInputDialog.getText(self, "Verify Backup Code", "Enter the passphrase to verify:")
+            if ok:
+                try:
+                    valid = self.encryptor.verify_backup_code(backup_code, backup_file)
+                    if valid:
+                        self.show_message("Success", "Backup code verified successfully!")
+                    else:
+                        self.show_message("Error", "Invalid backup code!", "error")
+                except Exception as e:
+                    self.show_message("Error", f"Failed to verify backup code: {e}", "error")
+
+    def restore_backup(self):
+        backup_file, _ = QFileDialog.getOpenFileName(self, "Select Backup File", "", "ZIP files (*.zip)")
+        if backup_file:
+            try:
+                restored_key_file = self.encryptor.restore_backup(backup_file)
+                self.settings["saved_key"] = restored_key_file
+                self.save_settings()
+                self.show_message("Success", f"Backup restored from {backup_file}")
+            except Exception as e:
+                self.show_message("Error", f"Failed to restore backup: {e}", "error")
+
+    def show_message(self, title, message, icon="information"):
+        msg = QMessageBox(self)
+        if icon == "information":
+            msg.setIcon(QMessageBox.Information)
+        elif icon == "error":
+            msg.setIcon(QMessageBox.Critical)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        msg.exec_()
+
+    def ask_saved_key(self):
+        reply = QMessageBox.question(self, 'Save Key', 'Do you want to save this key?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return reply == QMessageBox.Yes
+
+    def get_stylesheet(self):
+        return """
+            QWidget {
+                background-color: #222222;
+                color: white;
+            }
+            QLabel {
+                color: white; 
+            }
+        """
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = App()
+    window.show()
+    sys.exit(app.exec_())
+ 
